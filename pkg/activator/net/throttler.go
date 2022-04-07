@@ -18,6 +18,9 @@ package net
 
 import (
 	"context"
+	"go.opencensus.io/trace"
+	tracingconfig "knative.dev/pkg/tracing/config"
+	activatorconfig "knative.dev/serving/pkg/activator/config"
 	"math"
 	"math/rand"
 	"net/http"
@@ -216,14 +219,22 @@ func (rt *revisionThrottler) acquireDest(ctx context.Context) (func(), *podTrack
 func (rt *revisionThrottler) try(ctx context.Context, function func(string) error) error {
 	var ret error
 
+	config := activatorconfig.FromContext(ctx)
+	tracingEnabled := config.Tracing.Backend != tracingconfig.None
+	lbContext, lbSpan := ctx, (*trace.Span)(nil)
+
+	if tracingEnabled {
+		lbContext, lbSpan = trace.StartSpan(ctx, "load_balancing")
+	}
+
 	// Retrying infinitely as long as we receive no dest. Outer semaphore and inner
 	// pod capacity are not changed atomically, hence they can race each other. We
 	// "reenqueue" requests should that happen.
 	reenqueue := true
 	for reenqueue {
 		reenqueue = false
-		if err := rt.breaker.Maybe(ctx, func() {
-			cb, tracker := rt.acquireDest(ctx)
+		if err := rt.breaker.Maybe(lbContext, func() {
+			cb, tracker := rt.acquireDest(lbContext)
 			if tracker == nil {
 				// This can happen if individual requests raced each other or if pod
 				// capacity was decreased after passing the outer semaphore.
@@ -237,6 +248,9 @@ func (rt *revisionThrottler) try(ctx context.Context, function func(string) erro
 			return err
 		}
 	}
+
+	lbSpan.End()
+
 	return ret
 }
 

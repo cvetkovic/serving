@@ -19,6 +19,10 @@ package net
 import (
 	"context"
 	"errors"
+	"go.uber.org/zap"
+	"knative.dev/pkg/logging"
+	"knative.dev/pkg/tracing/config"
+	activatorconfig "knative.dev/serving/pkg/activator/config"
 	"math"
 	"strconv"
 	"sync"
@@ -207,6 +211,29 @@ func makeTrackers(num, cc int) []*podTracker {
 	return x
 }
 
+func tracingConfig(enabled bool) *corev1.ConfigMap {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: config.ConfigName,
+		},
+		Data: map[string]string{
+			"backend": "none",
+		},
+	}
+	if enabled {
+		cm.Data["backend"] = "zipkin"
+		cm.Data["zipkin-endpoint"] = "foo.bar"
+		cm.Data["debug"] = "true"
+	}
+	return cm
+}
+
+func setupConfigStore(t testing.TB, logger *zap.SugaredLogger) *activatorconfig.Store {
+	configStore := activatorconfig.NewStore(logger)
+	configStore.OnConfigChanged(tracingConfig(false))
+	return configStore
+}
+
 func TestThrottlerErrorNoRevision(t *testing.T) {
 	ctx, cancel, _ := rtesting.SetupFakeContextWithCancel(t)
 	servfake := fakeservingclient.Get(ctx)
@@ -219,6 +246,9 @@ func TestThrottlerErrorNoRevision(t *testing.T) {
 		cancel()
 		waitInformers()
 	}()
+
+	configStore := setupConfigStore(t, logging.FromContext(ctx))
+	ctx = configStore.ToContext(ctx)
 
 	// Add the revision we're testing.
 	revID := types.NamespacedName{Namespace: testNamespace, Name: testRevision}
@@ -270,6 +300,9 @@ func TestThrottlerErrorOneTimesOut(t *testing.T) {
 		waitInformers()
 	}()
 
+	configStore := setupConfigStore(t, logging.FromContext(ctx))
+	ctx = configStore.ToContext(ctx)
+
 	// Add the revision we're testing.
 	revID := types.NamespacedName{Namespace: testNamespace, Name: testRevision}
 	revision := revisionCC1(revID, pkgnet.ProtocolHTTP1)
@@ -289,6 +322,9 @@ func TestThrottlerErrorOneTimesOut(t *testing.T) {
 
 	reqCtx, cancel2 := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel2()
+
+	reqCtx = configStore.ToContext(reqCtx)
+
 	resultChan := throttler.try(reqCtx, 2 /*requests*/, func(string) error {
 		mux.Lock()
 		return nil
@@ -421,6 +457,9 @@ func TestThrottlerSuccesses(t *testing.T) {
 				waitInformers()
 			}()
 
+			configStore := setupConfigStore(t, logging.FromContext(ctx))
+			ctx = configStore.ToContext(ctx)
+
 			// Add the revision were testing.
 			servfake.ServingV1().Revisions(tc.revision.Namespace).Create(ctx, tc.revision, metav1.CreateOptions{})
 			revisions.Informer().GetIndexer().Add(tc.revision)
@@ -491,6 +530,8 @@ func TestThrottlerSuccesses(t *testing.T) {
 
 			tryContext, cancel2 := context.WithTimeout(context.Background(), 1*time.Second)
 			defer cancel2()
+
+			tryContext = configStore.ToContext(tryContext)
 
 			waitGrp := sync.WaitGroup{}
 			waitGrp.Add(tc.requests)
@@ -732,6 +773,9 @@ func TestMultipleActivators(t *testing.T) {
 	servfake := fakeservingclient.Get(ctx)
 	revisions := revisioninformer.Get(ctx)
 
+	configStore := setupConfigStore(t, logging.FromContext(ctx))
+	ctx = configStore.ToContext(ctx)
+
 	waitInformers, err := rtesting.RunAndSyncInformers(ctx, endpoints.Informer(), revisions.Informer())
 	if err != nil {
 		t.Fatal("Failed to start informers:", err)
@@ -801,6 +845,9 @@ func TestMultipleActivators(t *testing.T) {
 
 	reqCtx, cancel2 := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel2()
+
+	reqCtx = configStore.ToContext(reqCtx)
+
 	resultChan := throttler.try(reqCtx, 2 /*requests*/, func(string) error {
 		mux.Lock()
 		return nil
