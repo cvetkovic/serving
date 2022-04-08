@@ -157,14 +157,14 @@ func TestQueueTraceSpans(t *testing.T) {
 			if len(gotSpans) != tc.wantSpans {
 				t.Errorf("Got %d spans, expected %d", len(gotSpans), tc.wantSpans)
 			}
-			spanNames := []string{"probe", "/", "queue_proxy"}
+			spanNames := []string{"probe", "/", "qp_total_time_spent"}
 			if !tc.probeTrace {
 				spanNames = spanNames[1:]
 			}
 			// We want to add `queueWait` span only if there is possible queueing
 			// and if the tests actually expects tracing.
 			if !tc.infiniteCC && tc.wantSpans > 1 {
-				spanNames = append([]string{"queue_wait"}, spanNames...)
+				spanNames = append([]string{"qp_queuing_time"}, spanNames...)
 			}
 			gs := []string{}
 			for i := 0; i < len(gotSpans); i++ {

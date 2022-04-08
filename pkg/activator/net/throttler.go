@@ -207,8 +207,17 @@ func noop() {}
 // Returns a dest that at the moment of choosing had an open slot
 // for request.
 func (rt *revisionThrottler) acquireDest(ctx context.Context) (func(), *podTracker) {
+	config := activatorconfig.FromContext(ctx)
+	tracingEnabled := config.Tracing.Backend != tracingconfig.None
+	lbSpan := (*trace.Span)(nil)
+
+	if tracingEnabled {
+		_, lbSpan = trace.StartSpan(ctx, "act_lb_alg_overhead")
+	}
+
 	rt.mux.RLock()
 	defer rt.mux.RUnlock()
+	defer lbSpan.End()
 
 	if rt.clusterIPTracker != nil {
 		return noop, rt.clusterIPTracker
@@ -224,7 +233,7 @@ func (rt *revisionThrottler) try(ctx context.Context, function func(string) erro
 	lbContext, lbSpan := ctx, (*trace.Span)(nil)
 
 	if tracingEnabled {
-		lbContext, lbSpan = trace.StartSpan(ctx, "load_balancing")
+		lbContext, lbSpan = trace.StartSpan(ctx, "act_queueing")
 	}
 
 	// Retrying infinitely as long as we receive no dest. Outer semaphore and inner
@@ -241,6 +250,8 @@ func (rt *revisionThrottler) try(ctx context.Context, function func(string) erro
 				reenqueue = true
 				return
 			}
+			lbSpan.End()
+
 			defer cb()
 			// We already reserved a guaranteed spot. So just execute the passed functor.
 			ret = function(tracker.dest)
@@ -248,8 +259,6 @@ func (rt *revisionThrottler) try(ctx context.Context, function func(string) erro
 			return err
 		}
 	}
-
-	lbSpan.End()
 
 	return ret
 }
@@ -530,14 +539,14 @@ func (t *Throttler) run(updateCh <-chan revisionDestsUpdate) {
 
 // Try waits for capacity and then executes function, passing in a l4 dest to send a request
 func (t *Throttler) Try(ctx context.Context, revID types.NamespacedName, function func(string) error) error {
-	rt, err := t.getOrCreateRevisionThrottler(revID)
+	rt, err := t.getOrCreateRevisionThrottler(&ctx, revID)
 	if err != nil {
 		return err
 	}
 	return rt.try(ctx, function)
 }
 
-func (t *Throttler) getOrCreateRevisionThrottler(revID types.NamespacedName) (*revisionThrottler, error) {
+func (t *Throttler) getOrCreateRevisionThrottler(ctx *context.Context, revID types.NamespacedName) (*revisionThrottler, error) {
 	// First, see if we can succeed with just an RLock. This is in the request path so optimizing
 	// for this case is important
 	t.revisionThrottlersMutex.RLock()
@@ -552,6 +561,18 @@ func (t *Throttler) getOrCreateRevisionThrottler(revID types.NamespacedName) (*r
 	defer t.revisionThrottlersMutex.Unlock()
 	revThrottler, ok = t.revisionThrottlers[revID]
 	if !ok {
+		// cold start -> create revision
+		if ctx != nil {
+			config := activatorconfig.FromContext(*ctx)
+			tracingEnabled := config.Tracing.Backend != tracingconfig.None
+			rvCreationSpan := (*trace.Span)(nil)
+
+			if tracingEnabled {
+				_, rvCreationSpan = trace.StartSpan(*ctx, "act_revision_creation")
+			}
+			defer rvCreationSpan.End()
+		}
+
 		rev, err := t.revisionLister.Revisions(revID.Namespace).Get(revID.Name)
 		if err != nil {
 			return nil, err
@@ -564,7 +585,9 @@ func (t *Throttler) getOrCreateRevisionThrottler(revID types.NamespacedName) (*r
 			t.logger,
 		)
 		t.revisionThrottlers[revID] = revThrottler
+
 	}
+
 	return revThrottler, nil
 }
 
@@ -576,7 +599,7 @@ func (t *Throttler) revisionUpdated(obj interface{}) {
 
 	t.logger.Debug("Revision update", zap.String(logkey.Key, revID.String()))
 
-	if _, err := t.getOrCreateRevisionThrottler(revID); err != nil {
+	if _, err := t.getOrCreateRevisionThrottler(nil, revID); err != nil {
 		t.logger.Errorw("Failed to get revision throttler for revision",
 			zap.Error(err), zap.String(logkey.Key, revID.String()))
 	}
@@ -601,7 +624,7 @@ func (t *Throttler) revisionDeleted(obj interface{}) {
 }
 
 func (t *Throttler) handleUpdate(update revisionDestsUpdate) {
-	if rt, err := t.getOrCreateRevisionThrottler(update.Rev); err != nil {
+	if rt, err := t.getOrCreateRevisionThrottler(nil, update.Rev); err != nil {
 		if k8serrors.IsNotFound(err) {
 			t.logger.Debugw("Revision not found. It was probably removed", zap.String(logkey.Key, update.Rev.String()))
 		} else {
@@ -622,7 +645,7 @@ func (t *Throttler) handlePubEpsUpdate(eps *corev1.Endpoints) {
 		return
 	}
 	rev := types.NamespacedName{Name: revN, Namespace: eps.Namespace}
-	if rt, err := t.getOrCreateRevisionThrottler(rev); err != nil {
+	if rt, err := t.getOrCreateRevisionThrottler(nil, rev); err != nil {
 		if k8serrors.IsNotFound(err) {
 			t.logger.Debugw("Revision not found. It was probably removed", zap.String(logkey.Key, rev.String()))
 		} else {

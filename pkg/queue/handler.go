@@ -37,7 +37,7 @@ func ProxyHandler(breaker *Breaker, stats *network.RequestStats, tracingEnabled 
 		}
 
 		if tracingEnabled {
-			proxyCtx, proxySpan := trace.StartSpan(r.Context(), "queue_proxy")
+			proxyCtx, proxySpan := trace.StartSpan(r.Context(), "qp_total_time_spent")
 			r = r.WithContext(proxyCtx)
 			defer proxySpan.End()
 		}
@@ -57,7 +57,7 @@ func ProxyHandler(breaker *Breaker, stats *network.RequestStats, tracingEnabled 
 		if breaker != nil {
 			var waitSpan *trace.Span
 			if tracingEnabled {
-				_, waitSpan = trace.StartSpan(r.Context(), "queue_wait")
+				_, waitSpan = trace.StartSpan(r.Context(), "qp_queuing_time")
 			}
 			if err := breaker.Maybe(r.Context(), func() {
 				waitSpan.End()

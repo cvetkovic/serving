@@ -19,8 +19,15 @@ package queue
 import (
 	"context"
 	"fmt"
+	"go.uber.org/zap"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"knative.dev/pkg/logging"
+	activatorconfig "knative.dev/serving/pkg/activator/config"
 	"testing"
 	"time"
+
+	tracingconfig "knative.dev/pkg/tracing/config"
 )
 
 const (
@@ -344,10 +351,36 @@ func (r *requestor) request() {
 	r.requestWithContext(context.Background())
 }
 
+func tracingConfig(enabled bool) *corev1.ConfigMap {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: tracingconfig.ConfigName,
+		},
+		Data: map[string]string{
+			"backend": "none",
+		},
+	}
+	if enabled {
+		cm.Data["backend"] = "zipkin"
+		cm.Data["zipkin-endpoint"] = "foo.bar"
+		cm.Data["debug"] = "true"
+	}
+	return cm
+}
+
+func setupConfigStore(logger *zap.SugaredLogger) *activatorconfig.Store {
+	configStore := activatorconfig.NewStore(logger)
+	configStore.OnConfigChanged(tracingConfig(false))
+	return configStore
+}
+
 // requestWithContext simulates a request in a separate goroutine. The
 // request will either fail immediately (as observable via expectFailure)
 // or block until processSuccessfully is called.
 func (r *requestor) requestWithContext(ctx context.Context) {
+	configStore := setupConfigStore(logging.FromContext(ctx))
+	ctx = configStore.ToContext(ctx)
+
 	go func() {
 		err := r.breaker.Maybe(ctx, func() {
 			<-r.barrierCh

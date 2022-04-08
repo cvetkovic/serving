@@ -235,7 +235,7 @@ func TestActivationHandlerTraceSpans(t *testing.T) {
 		traceBackend: tracingconfig.None,
 	}}
 
-	spanNames := []string{"throttler_try", "/", "activator_proxy"}
+	spanNames := []string{"act_throttler_try", "/", "act_request_routing"}
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Setup transport

@@ -76,17 +76,22 @@ func (a *activationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	tryContext, trySpan := r.Context(), (*trace.Span)(nil)
 	if tracingEnabled {
-		tryContext, trySpan = trace.StartSpan(r.Context(), "throttler_try")
+		// NOTE: if big then we have a cold start
+		tryContext, trySpan = trace.StartSpan(r.Context(), "act_throttler_try")
 	}
 
 	revID := RevIDFrom(r.Context())
 	if err := a.throttler.Try(tryContext, revID, func(dest string) error {
+		// NOTE: function 'Try' returns revision handler and creates a new one in case of cold start
 		trySpan.End()
+
+		// NOTE: at this point execution spot has been reserved so the request needs to be routed
 
 		proxyCtx, proxySpan := r.Context(), (*trace.Span)(nil)
 		if tracingEnabled {
-			proxyCtx, proxySpan = trace.StartSpan(r.Context(), "activator_proxy")
+			proxyCtx, proxySpan = trace.StartSpan(r.Context(), "act_request_routing")
 		}
+		// NOTE: proxyRequest forward request to instance and waits for it to come back
 		a.proxyRequest(revID, w, r.WithContext(proxyCtx), dest, tracingEnabled, a.usePassthroughLb)
 		proxySpan.End()
 

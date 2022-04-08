@@ -496,7 +496,7 @@ func TestThrottlerSuccesses(t *testing.T) {
 			endpoints.Informer().GetIndexer().Add(publicEp)
 
 			revID := types.NamespacedName{Namespace: testNamespace, Name: testRevision}
-			rt, err := throttler.getOrCreateRevisionThrottler(revID)
+			rt, err := throttler.getOrCreateRevisionThrottler(nil, revID)
 			if err != nil {
 				t.Fatal("RevisionThrottler can't be found:", err)
 			}
@@ -725,7 +725,7 @@ func TestActivatorsIndexUpdate(t *testing.T) {
 	fake.CoreV1().Endpoints(testNamespace).Create(ctx, publicEp, metav1.CreateOptions{})
 	endpoints.Informer().GetIndexer().Add(publicEp)
 
-	rt, err := throttler.getOrCreateRevisionThrottler(revID)
+	rt, err := throttler.getOrCreateRevisionThrottler(nil, revID)
 	if err != nil {
 		t.Fatal("RevisionThrottler can't be found:", err)
 	}
@@ -824,7 +824,7 @@ func TestMultipleActivators(t *testing.T) {
 	fake.CoreV1().Endpoints(testNamespace).Create(ctx, publicEp, metav1.CreateOptions{})
 	endpoints.Informer().GetIndexer().Add(publicEp)
 
-	rt, err := throttler.getOrCreateRevisionThrottler(revID)
+	rt, err := throttler.getOrCreateRevisionThrottler(nil, revID)
 	if err != nil {
 		t.Fatal("RevisionThrottler can't be found:", err)
 	}
@@ -909,6 +909,9 @@ func TestInfiniteBreaker(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	configStore := setupConfigStore(t, logging.FromContext(ctx))
+	ctx = configStore.ToContext(ctx)
+
 	cancel()
 	if err := b.Maybe(ctx, nil); err == nil {
 		t.Error("Should have failed, but didn't")
@@ -923,6 +926,8 @@ func TestInfiniteBreaker(t *testing.T) {
 	// Twice.
 	for i := 0; i < 2; i++ {
 		ctx, cancel = context.WithCancel(context.Background())
+		configStore := setupConfigStore(t, logging.FromContext(ctx))
+		ctx = configStore.ToContext(ctx)
 		cancel()
 		res := false
 		if err := b.Maybe(ctx, func() { res = true }); err != nil {
@@ -938,6 +943,8 @@ func TestInfiniteBreaker(t *testing.T) {
 
 	// Repeat initial test.
 	ctx, cancel = context.WithCancel(context.Background())
+	configStore = setupConfigStore(t, logging.FromContext(ctx))
+	ctx = configStore.ToContext(ctx)
 	cancel()
 	if err := b.Maybe(ctx, nil); err == nil {
 		t.Error("Should have failed, but didn't")
@@ -948,6 +955,8 @@ func TestInfiniteBreaker(t *testing.T) {
 
 	// And now do the async test.
 	ctx, cancel = context.WithCancel(context.Background())
+	configStore = setupConfigStore(t, logging.FromContext(ctx))
+	ctx = configStore.ToContext(ctx)
 	defer cancel()
 
 	// Unlock the channel after a short delay.
